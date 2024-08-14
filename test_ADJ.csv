@@ -1,0 +1,7 @@
+,Gene A,Gene B,Gene C,Gene D,Gene E,Gene F
+Gene A,0,1,1,1,1,1
+Gene B,1,0,0,0,0,1
+Gene C,1,0,0,0,1,1
+Gene D,1,0,0,0,0,0
+Gene E,1,0,1,0,0,0
+Gene F,1,1,1,0,0,0

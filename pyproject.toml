@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orco"
+version = "0.1.1"
+dependencies = [
+  "scipy",
+  "numpy",
+  "networkx",
+  "pot",
+  "pandas",
+  "ecos",
+  "cvxpy"
+]
+authors = [
+  { name="Anish Simhal", email="aksimhal@gmail.com" },
+]
+description = "Ollivier-Ricci curvature for -omic network analysis"
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)", 
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/aksimhal/ORC-Omics"
