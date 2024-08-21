@@ -32,9 +32,6 @@ def pij(G, source, target, n_weight="weight", EPS=1e-7):
         raise ValueError(f"Net weight for neighbors of {source} is too small to compute interaction probability with {target}.")
 
 
-
-
-
 def compute_edge_weights(G: nx.Graph, n_weight="weight", e_weight="weight", e_normalized=False, e_sqrt=False, e_wprob=False):
     """ compute edge weights from given nodal weights 
     e_normalized = True AND e_sqrt = True : w_ij = 1/sqrt([(p_ij + p_ji)/2])

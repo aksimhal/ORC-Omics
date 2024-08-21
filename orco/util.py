@@ -43,29 +43,3 @@ def set_verbose(verbose="INFO"): # "ERROR"):
         logger.setLevel(logging.ERROR)
         
 
-def cut_graph_by_cutoff(G_origin, cutoff, e_weight="weight"):
-    """Remove graph's edges with "weight" greater than "cutoff".
-
-    Parameters
-    ----------
-    G_origin : NetworkX graph
-        A graph with ``weight`` as Ricci flow metric to cut.
-    cutoff : float
-        A threshold to remove all edges with "weight" greater than it.
-    e_weight : str
-        The edge weight used as Ricci flow metric. (Default value = "weight")
-
-    Returns
-    -------
-    G: NetworkX graph
-        A graph with edges cut by given cutoff value.
-    """
-    assert nx.get_edge_attributes(G_origin, e_weight), "No edge weight detected, abort."
-
-    G = G_origin.copy()
-    edge_trim_list = []
-    for ee in G.edges():
-        if G.edges[ee][e_weight] > cutoff:
-            edge_trim_list.append(ee)
-    G.remove_edges_from(edge_trim_list)
-    return G

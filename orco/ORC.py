@@ -35,7 +35,6 @@ import scipy.sparse.csgraph as scg
 
 from orco.util import logger, set_verbose
 from orco.graph_attributes import pij, compute_edge_weights
-from orco.metrics import dist_cvx
 
 EPS = 1e-7
 
@@ -44,11 +43,7 @@ EPS = 1e-7
 ###############################
 
 _G = None
-_W1method = "Primal"
 _alpha = 0.0
-_gamma = 0.0
-_delta = 0.5
-_kdistr = "distr1"
 _pdistr = "mass_action"
 _gdist = "hop"
 _nbr_maxk = 500
@@ -172,153 +167,6 @@ def _node_distribution_1step(G, node, alpha=0.0, n_weight="weight", e_weight="we
     return dist + [al], nbr + [node]
 
 
-def _kneighbors(G, sources, k):
-    """ Find all nodes within k hops from source node in G                                                                                                
-    Note: this can be optimized.
-
-    Parameters
-    ----------
-    G : NetworkX Graph
-        Graph network
-    sources : tuple
-        tuple containing all nodes to use as source node  
-    k : int 
-        Number of hops 
-
-    Returns
-    -------
-    knbrs : list
-        list of all nodes within (including) k hops from given source nodes   
-    """
-    knbrs = set(sources)
-    n_new = knbrs.copy()
-    for hop in range(k):
-        n_old, n_new = n_new, set()
-        for v in n_old:
-            for v_nbr in G.neighbors(v):
-                if v_nbr not in knbrs:
-                    n_new.add(v_nbr)
-        knbrs = knbrs | n_new
-    return knbrs
-
-
-@lru_cache(_cache_maxsize)
-def _node_distribution_2step(G, node, alpha=0.0, gamma=0.3, n_weight="weight", e_weight="weight",
-                             pdistr="mass_action", power=1, EPS=1e-7):
-    """ Compute probability distribution of a two step Markov walk from given node.
-    
-    Note: returns uniform distribution when neighboring weights are too small to normalize.
-    """
-    logger.debug(
-        f"2-step node distribution selected options: pdistr = {pdistr}, alpha={alpha}, power = {power}, n-weight = {n_weight}, e_weight = {e_weight}")
-    assert pdistr in ['mass_action', 'edge_based', 'combo',
-                      'edge_simple'], "Unrecognized pdistr, options = ['mass_action', 'edge_based', 'combo', 'edge_simple']."
-    if type(alpha) is str:
-        assert alpha in ['ED', 'EDnot', 'weight'], "Unrecognized alpha, options = ['ED','EDnot','weight', float]."
-        if alpha == 'weight':
-            assert nx.get_node_attributes(G, n_weight), "Node weight not detected for node-specific alpha."
-            alpha_weight = sum(G.nodes[ww][n_weight] for ww in G.nodes())
-            al = G.nodes[node][n_weight] / alpha_weight
-        else:  # alpha == 'ED', 'EDnot'
-            assert nx.get_node_attributes(G, 'ED'), "ED not detected for node-specific alpha."
-            if alpha == 'ED':
-                al = G.nodes[node]['ED']
-            else:  # 'EDnot'
-                al = 1 - G.nodes[node]['ED']
-    else:  # float
-        al = alpha
-    nbrs = list(G.neighbors(node))
-    community2 = _kneighbors(G, nbrs, 2)
-    nbrs2 = set([k for k in community2 if k not in nbrs])
-    nbrs2.discard(node)
-    paired_weight_node = []
-    for nbr in nbrs:
-        if pdistr == "mass_action":
-            w = G.nodes[nbr][n_weight]
-        elif pdistr == 'edge_simple':
-            w = 1 / (G.edges[(node, nbr)][e_weight] ** power)
-        elif pdistr == "edge_based":
-            w = math.e ** (-G.edges[(node, nbr)][e_weight] ** power)
-        else:  # 'combo'
-            w = G.nodes[nbr][n_weight] * (math.e ** (-G.edges[(node, nbr)][e_weight] ** power))
-        heapq.heappush(paired_weight_node, (w, nbr))
-    for nbr in nbrs2:
-        if pdistr == "mass_action":
-            w = G.nodes[nbr][n_weight]
-        elif pdistr == 'edge_simple':
-            w = 1 / (G.edges[(node, nbr)][e_weight] ** power)
-        elif pdistr == 'edge_based':
-            w = math.e ** (-G.edges[(node, nbr)][e_weight] ** power)
-        else:  # 'combo'
-            w = G.nodes[nbr][n_weight] * (math.e ** (-G.edges[(node, nbr)][e_weight] ** power))
-        heapq.heappush(paired_weight_node, (w * gamma, nbr))
-    weighted_nodal_degree = sum([x[0] for x in paired_weight_node])
-    if (len(nbrs) + len(nbrs2)) == 0:  # i.e. no neighbors so all mass stays at node
-        return [1.0], [node]
-    elif weighted_nodal_degree > EPS:  # ensure no dividing by zero
-        dist = [(1.0 - al) * w / weighted_nodal_degree for w, _ in paired_weight_node]
-    else:  # uniform distribution when neighboring weights are too small to normalize
-        logger.warning("{}: using uniform 2-step  distribution because weighted nodal degree too small:".format(node), \
-                       paired_weight_node)
-        dist = [((1.0 - al) * (1.0 - gamma)) / len(nbrs) if (v in nbrs) else ((1.0 - al) * gamma) / len(nbrs2) for _, v
-                in paired_weight_node]
-    nbr = [x[1] for x in paired_weight_node]
-    return dist + [al], nbr + [node]
-
-
-@lru_cache(_cache_maxsize)
-def _node_distribution_thresh(G, node, alpha=0.0, delta=1.0, n_weight="weight", e_weight="weight",
-                              pdistr="mass_action", power=1, EPS=1e-7):
-    """ Compute probability distribution over all nodes within delta-radius distance from given node.
-    
-    Note: returns uniform distribution when neighboring weights are too small to normalize.
-    """
-    logger.debug(
-        f"ego node distribution selected options: pdistr = {pdistr}, delta = {delta}, alpha={alpha}, power = {power}, n-weight = {n_weight}, e_weight = {e_weight}")
-    assert pdistr in ['mass_action', 'edge_based', 'combo',
-                      'edge_simple'], "Unrecognized pdistr, options = ['mass_action', 'edge_based', 'combo', 'edge_simple']."
-    if type(alpha) is str:
-        assert alpha in ['ED', 'EDnot', 'weight'], "Unrecognized alpha, options = ['ED','EDnot','weight', float]."
-        if alpha == 'weight':
-            assert nx.get_node_attributes(G, n_weight), "Node weight not detected for node-specific alpha."
-            alpha_weight = sum(G.nodes[ww][n_weight] for ww in G.nodes())
-            al = G.nodes[node][n_weight] / alpha_weight
-        else:  # alpha == 'ED','EDnot'
-            assert nx.get_node_attributes(G, 'ED'), "ED not detected for node-specific alpha."
-            if alpha == 'ED':
-                al = G.nodes[node]['ED']
-            else:  # 'EDnot'
-                al = 1 - G.nodes[node]['ED']
-    else:  # float
-        al = alpha
-
-    H = nx.ego_graph(G, node, radius=delta, center=False, distance=e_weight)
-    nbrs = list(H.nodes())
-    paired_weight_node = []
-    for nbr in nbrs:
-        if pdistr == "mass_action":
-            w = G.nodes[nbr][n_weight]
-        elif pdistr == 'edge_simple':
-            w = 1 / (G.edges[(node, nbr)][e_weight] ** power)
-        elif pdistr == "edge_based":
-            w = math.e ** (-G.edges[(node, nbr)][e_weight] ** power)
-        else:  # 'combo'
-            w = G.nodes[nbr][n_weight] * (math.e ** (-G.edges[(node, nbr)][e_weight] ** power))
-        heapq.heappush(paired_weight_node, (w, nbr))
-    weighted_nodal_degree = sum([x[0] for x in paired_weight_node])
-    if len(nbrs) == 0:  # i.e. no neighbors so all mass stays at node
-        return [1.0], [node]
-    elif weighted_nodal_degree > EPS:  # ensure no dividing by zero
-        dist = [(1.0 - al) * w / weighted_nodal_degree for w, _ in paired_weight_node]
-    else:  # uniform distribution when neighboring weights are too small to normalize
-        logger.warning("{}: using uniform distribution because weighted nodal degree too small:".format(node),
-                       paired_weight_node)
-        dist = [(1.0 - al) / len(nbrs)] * len(nbrs)
-        # return None, None
-    nbr = [x[1] for x in paired_weight_node]
-    return dist + [al], nbr + [node]
-
-
 def _local_dist_array(A, N0, N1):
     """ Given dataframe of shortest distances "A,"  
         return the corresponding distance matrix between nodes in "N0" and nodes in "N1".
@@ -326,76 +174,6 @@ def _local_dist_array(A, N0, N1):
     """
     D = np.ascontiguousarray(A.loc[N0, N1].values, dtype=np.float64)
     return D
-
-def _paired_distributions(p0, nbrs0, p1, nbrs1):
-    """ Return distributions of the same size in the same order by matching nbrs 
-    Parameters
-    ----------
-    p0 : list  
-        distribution for source node 
-    nbrs0 : list 
-        list of source neighbors associated with p0  
-    p1 : list  
-        distribution for target node 
-    nbrs1 : list 
-        list of target neighbors associated with p1  
-    
-    Returns
-    -------
-    P0 : list 
-        updated source distribution of length N associated with nodes in nbrs
-    P1 : list 
-        updated distribution of length N associated with nodes in nbrs   
-    nbrs : list
-        union of N neighbors of source and target  corresponding to distributions P0 and P1
-
-    """
-    s = dict(zip(nbrs0, p0))
-    t = dict(zip(nbrs1, p1))
-    paired_weight_node = []
-    for nbr in set(nbrs0) | set(nbrs1):
-        heapq.heappush(paired_weight_node, (s.get(nbr, 0.0), t.get(nbr, 0.0), nbr))
-    P0, P1, nbrs = zip(*paired_weight_node)
-    return P0, P1, nbrs
-
-
-def _OTD_KRduality(x, y, d):
-    """Compute the optimal transportation distance (OTD) using Kantorovich-Rubenstein Duality
-    of the given density distributions by CVXPY.
-
-    Parameters
-    ----------
-    x : (m,) numpy.ndarray
-        Source's density distributions, includes source and source's neighbors.
-    y : (n,) numpy.ndarray
-        Target's density distributions, includes source and source's neighbors.
-    d : (m, n) numpy.ndarray
-        Shortest path matrix.
-
-    Returns
-    -------
-    m : float 
-        Optimal transportation distance. 
-    """
-    assert len(y) == len(x), 'OMT KRduality must have distributions of the same size'
-    p = x - y
-    n = len(x)
-    B = np.hstack((-np.ones((n - 1, 1)), np.eye(n - 1)))
-    A = B.copy()
-    BB = B.copy()
-    for cn in range(n - 1):
-        BB[:, [cn, cn + 1]] = BB[:, [cn + 1, cn]]
-        # B = np.vstack((B,np.roll(B, -1, axis=1)))
-        A = np.vstack((A, BB))
-    b = d[np.where(~np.eye(d.shape[0], dtype=bool))]  # off diagonal d values - row-wise
-    u = cvx.Variable(n)
-    obj = cvx.Maximize(u.T @ p)
-    constraints = [A @ u <= b]
-    prob = cvx.Problem(obj, constraints)
-    m = prob.solve()
-    # m = prob.solve(solver='ECOS', abstol=1e-6,verbose=True)
-    # m = prob.solve(solver='OSQP', max_iter=100000,verbose=False)
-    return m
 
 
 def _optimal_transportation_distance(x, y, d, solvr=None):
@@ -430,6 +208,7 @@ def _optimal_transportation_distance(x, y, d, solvr=None):
         # m = prob.solve(solver='OSQP', max_iter=100000,verbose=False)
     return m
 
+
 def _compute_wasserstein_edge(source, target):
     """ compute Wasserstein distance for given (possible fictitious) edge.
 
@@ -457,62 +236,36 @@ def _compute_wasserstein_edge(source, target):
 
     assert _pdistr in ['mass_action', 'edge_based', 'combo',
                        'edge_simple'], "Unrecognized pdistr, options = ['mass_action', 'edge_based', 'combo', 'edge_simple']."
-    assert _kdistr in ['distr1', 'distr2', 'thresh'], "Unrecognized kdistr, options = ['distr1','distr2','thresh']."
-    assert _W1method in ['Primal', 'KRduality', 'dual2'], "Unrecognized W1method, options = ['Primal','KRduality','dual2']."
+
     if type(_alpha) is str:
         assert _alpha in ['ED', 'EDnot', 'weight'], "Unrecognized alpha, options = ['ED','EDnot','weight', float]."
-    if _kdistr == 'distr1':
-        p0, nbrs0 = _node_distribution_1step(_G, source, alpha=_alpha, n_weight=_n_weight,
-                                             e_weight=_e_weight, pdistr=_pdistr, power=_power, EPS=_EPS)
-        p1, nbrs1 = _node_distribution_1step(_G, target, alpha=_alpha, n_weight=_n_weight,
-                                             e_weight=_e_weight, pdistr=_pdistr, power=_power, EPS=_EPS)
-    elif _kdistr == 'distr2':
-        p0, nbrs0 = _node_distribution_2step(_G, source, alpha=_alpha, gamma=_gamma, n_weight=_n_weight,
-                                             e_weight=_e_weight, pdistr=_pdistr, power=_power, EPS=_EPS)
-        p1, nbrs1 = _node_distribution_2step(_G, target, alpha=_alpha, gamma=_gamma, n_weight=_n_weight,
-                                             e_weight=_e_weight, pdistr=_pdistr, power=_power, EPS=_EPS)
-    else:  # thresh
-        p0, nbrs0 = _node_distribution_thresh(_G, source, alpha=_alpha, delta=_delta, n_weight=_n_weight,
-                                              e_weight=_e_weight, pdistr=_pdistr, power=_power, EPS=_EPS)
-        p1, nbrs1 = _node_distribution_thresh(_G, target, alpha=_alpha, delta=_delta, n_weight=_n_weight,
-                                              e_weight=_e_weight, pdistr=_pdistr, power=_power, EPS=_EPS)
-    if _W1method == 'KRduality':
-        P0, P1, nbrs = _paired_distributions(p0, nbrs0, p1, nbrs1)
-        D = _local_dist_array(_C, nbrs, nbrs)
-        x = np.asarray(P0, dtype=np.float64)
-        y = np.asarray(P1, dtype=np.float64)
-        omtd = _OTD_KRduality(x, y, D.astype(np.float64))
-        logger.trace("OTD_KRduality(p-{},p-{}) = {:.5e}".format(source, target, omtd))
-    elif _W1method == 'dual2':
-        P0, P1, nbrs = _paired_distributions(p0, nbrs0, p1, nbrs1)
-        # nl = list(set(_G.neighbors(source)) | set(_G.neighbors(target)))
-        el = list(_G.subgraph(nbrs).edges())
-        D = nx.linalg.graphmatrix.incidence_matrix(_G, nodelist=nbrs, edgelist=el,
-                                                   oriented=True, weight='e_weight')
-        dP = np.array(P0) - np.array(P1)
-        dP -= np.average(dP)
-        omtd = dist_cvx(dP, D)
-    else:  # _W1method == 'Primal':
-        D = _local_dist_array(_C, nbrs0, nbrs1)
-        x = np.asarray(p0, dtype=np.float64)
-        x /= x.sum()
-        y = np.asarray(p1, dtype=np.float64)
-        y /= y.sum()
-        try:
-            omtd, lg = ot.emd2(x.astype(np.float64), y.astype(np.float64), D.astype(np.float64), log=True,
-                               numItermax=10000000) 
-            if lg['warning'] is not None:
-                logger.warning(
-                    'POT library failed: warning = {}, retry with explicit computation OTD(p_{},p_{})'.format(
-                        lg['warning'],
-                        source, target))
-                del (omtd)
-                omtd = _optimal_transportation_distance(x, y, D)
-                logger.trace("OTD(p-{},p-{}) = {:.5e}".format(source, target, omtd))
-        except cvx.error.SolverError:
-            logger.warning("OTD(p-{},p-{}) failed, retry with SCS solver".format(source, target))
-            omtd = _optimal_transportation_distance(x, y, D, solvr='SCS')
-            logger.trace("OTD-SCS(p-{},p-{}) = {:.5e}".format(source, target, omtd))
+    
+    p0, nbrs0 = _node_distribution_1step(_G, source, alpha=_alpha, n_weight=_n_weight,
+                                         e_weight=_e_weight, pdistr=_pdistr, power=_power, EPS=_EPS)
+    p1, nbrs1 = _node_distribution_1step(_G, target, alpha=_alpha, n_weight=_n_weight,
+                                         e_weight=_e_weight, pdistr=_pdistr, power=_power, EPS=_EPS)
+    
+
+    D = _local_dist_array(_C, nbrs0, nbrs1)
+    x = np.asarray(p0, dtype=np.float64)
+    x /= x.sum()
+    y = np.asarray(p1, dtype=np.float64)
+    y /= y.sum()
+    try:
+        omtd, lg = ot.emd2(x.astype(np.float64), y.astype(np.float64), D.astype(np.float64), log=True,
+                           numItermax=10000000) 
+        if lg['warning'] is not None:
+            logger.warning(
+                'POT library failed: warning = {}, retry with explicit computation OTD(p_{},p_{})'.format(
+                    lg['warning'],
+                    source, target))
+            del (omtd)
+            omtd = _optimal_transportation_distance(x, y, D)
+            logger.trace("OTD(p-{},p-{}) = {:.5e}".format(source, target, omtd))
+    except cvx.error.SolverError:
+        logger.warning("OTD(p-{},p-{}) failed, retry with SCS solver".format(source, target))
+        omtd = _optimal_transportation_distance(x, y, D, solvr='SCS')
+        logger.trace("OTD-SCS(p-{},p-{}) = {:.5e}".format(source, target, omtd))
     return {(source, target): omtd}
 
 
@@ -523,8 +276,9 @@ def _wrap_compute_wasserstein_edge(stuff):
 
 def _compute_wasserstein_edges(G, n_weight="weight", e_weight="weight",
                                e_normalized=False, e_sqrt=False, e_wdeg=False, e_wprob=False,
-                               pdistr="mass_action", kdistr="distr1", gdist="hop", alpha=0.0, gamma=0.0, delta=0.5,
-                               power=1, edge_list=None, C=None, W1method="Primal", EPS=1e-7, nbr_maxk=500,
+                               pdistr="mass_action", gdist="hop", alpha=0.0, 
+                               power=1, edge_list=None, C=None, 
+                               EPS=1e-7, nbr_maxk=500,
                                proc=mp.cpu_count(), chunksize=None, cache_maxsize=1000000, return_C=False):
     """ Compute Wasserstein distance on all edges in edge_list
 
@@ -562,30 +316,6 @@ def _compute_wasserstein_edges(G, n_weight="weight", e_weight="weight",
         - 'edge_based' : edge-based on distance --> m_ij := exp(-d(i,j)^power)
         - 'combo' : combine node and edge attributes --> m_ij := w_j * exp(-d(i,j)^power)
         - 'edge_simple' : simple edge-based on distance --> m_ij := 1/(d(i,j)^power)
-    kdistr : {'distr1', 'distr2', 'thresh'}
-        Specify how to construct nodal probabilty distribution, i.e. which nodes the distribution should be defined over.
-        (Default = 'distr1')
-
-        options
-
-        - 'distr1' : one-step Markov chain (Default)
-                     .. math::
-
-                         p_ij = alpha,                                     if j=i, \\
-                         (1-alpha) * [ m_ij / sum_{k: k~i}(m_ik) ], if j~i, \\
-                         0,                                         otherwise
-        'distr2' : two-step Markov chain
-                   .. math::
-
-                       p_ij = alpha,                                                                              if j=i \\
-                              (1-alpha) * [ m_ij / ( sum_{k: k~i}(m_ik) + gamma * (sum_{k: k~j~i, k\~i}(m_ik) ) ],       if j~i, \\
-                              (1-alpha) * gamma * [ m_ij / sum_{k: k~i}(m_ik) + gamma * (sum_{k: k~j~i, k/~i}(m_ik) ) ], if j~k~i and j\~i, \\
-                              0,                                                                                         otherwise
-        'thresh' : delta-ball step
-                   .. math::
-                       p_ij = alpha,                                                if i=j \\
-                              (1-alpha) * [ m_ij / sum_{k: d(i,k) < delta}(m_ik) ], if d(i,j) < delta \\
-                              0,                                                    otherwise.
     gdist : {'hop','whop'}
         Graph distance (Default = 'hop')
 
@@ -602,12 +332,6 @@ def _compute_wasserstein_edges(G, n_weight="weight", e_weight="weight",
         - 'ED' : alpha is node-dependent prescribed by the ED (alpha_i = pi_i)
         - 'EDnot' : alpha is node-dependent prescribed by the probabilistic negation of the ED (alpha_i = 1 - pi_i)
         - 'weight' : alpha is node-dependent prescribed by the given node weight 'n_weight'
-    gamma : float (0.0 <= gamma <= 1.0)
-        weight for two-step interactions (Default = 0.0).
-
-        Note: when 'kdistr' is not 'distr2' gamma is treated as 0.0 regardless.
-    delta : float
-        Radius of distribution support ball when kdistr=thresh (Default value = 0.5).
     power : float
         Edge weight power for edge-based distribution. (Default value = 1)
     edge_list : {list, None, "all"}
@@ -621,8 +345,6 @@ def _compute_wasserstein_edges(G, n_weight="weight", e_weight="weight",
         Dictionary of graph distance (gdist) between every two nodes
 
         Note: if not specified, C is computed according to the specified 'gdist'
-    W1method = {"Primal", "KRduality", "dual2"}
-        Method for solving EMD. (Default = "Primal").
     EPS : float
         Threshold for approximately 0
     nbr_maxk : int
@@ -699,12 +421,8 @@ def _compute_wasserstein_edges(G, n_weight="weight", e_weight="weight",
                                          e_sqrt=e_sqrt, e_wprob=e_wprob)
 
     global _G
-    global _W1method
     global _alpha
-    global _gamma
-    global _delta
     global _pdistr
-    global _kdistr
     global _gdist
     global _nbr_maxk
     global _C
@@ -721,11 +439,7 @@ def _compute_wasserstein_edges(G, n_weight="weight", e_weight="weight",
     global _edge_list
 
     _G = G.copy()
-    _W1method = W1method
     _alpha = alpha
-    _gamma = gamma
-    _delta = delta
-    _kdistr = kdistr
     _pdistr = pdistr
     _gdist = gdist
     _nbr_maxk = nbr_maxk
@@ -839,8 +553,8 @@ def _wrap_compute_curvature_edge(stuff):
 
 def _compute_curvature_edges(G, n_weight="weight", e_weight="weight",
                              e_normalized=False, e_sqrt=False, e_wdeg=False, e_wprob=False,
-                             pdistr="mass_action", kdistr="distr1", gdist="hop", alpha=0.0, gamma=0.0, delta=0.5,
-                             power=1, edge_list=None, C=None, W1method="Primal", EPS=1e-7, nbr_maxk=500,
+                             pdistr="mass_action", gdist="hop", alpha=0.0, 
+                             power=1, edge_list=None, C=None, EPS=1e-7, nbr_maxk=500,
                              proc=mp.cpu_count(), chunksize=None, cache_maxsize=1000000):
     """ Compute curvature on all edges in edge_list
 
@@ -878,29 +592,8 @@ def _compute_curvature_edges(G, n_weight="weight", e_weight="weight",
         - 'edge_based' : edge-based on distance --> m_ij := exp(-d(i,j)^power)
         - 'combo' : combine node and edge attributes --> m_ij := w_j * exp(-d(i,j)^power)
         - 'edge_simple' : simple edge-based on distance --> m_ij := 1/(d(i,j)^power)
-    kdistr : {'distr1', 'distr2', 'thresh'}
-        Specify how to construct nodal probabilty distribution, i.e. which nodes the distribution should be defined over.
-        (Default = 'distr1')
 
-        options:
-
-        - 'distr1' : one-step Markov chain (Default)
-                     .. math::
-                         p_ij = alpha,                                     if j=i, \\
-                                (1-alpha) * [ m_ij / sum_{k: k~i}(m_ik) ], if j~i, \\
-                                0,                                         otherwise
-        - 'distr2' : two-step Markov chain
-                     .. math::
-                         p_ij = alpha,                                                                              if j=i \\
-                                (1-alpha) * [ m_ij / ( sum_{k: k~i}(m_ik) + gamma * (sum_{k: k~j~i, k\~i}(m_ik) ) ],       if j~i, \\
-                                (1-alpha) * gamma * [ m_ij / sum_{k: k~i}(m_ik) + gamma * (sum_{k: k~j~i, k/~i}(m_ik) ) ], if j~k~i and j\~i, \\
-                                0,                                                                                         otherwise
-        - 'thresh' : delta-ball step
-                     .. math::
-                         p_ij = alpha,                                                if i=j \\
-                                (1-alpha) * [ m_ij / sum_{k: d(i,k) < delta}(m_ik) ], if d(i,j) < delta \\
-                                0,                                                    otherwise. \\
-                                gdist : {'hop','whop'}
+    gdist : {'hop','whop'}
         Graph distance (Default = 'hop')
 
         options:
@@ -916,12 +609,6 @@ def _compute_curvature_edges(G, n_weight="weight", e_weight="weight",
         - 'ED' : alpha is node-dependent prescribed by the ED (alpha_i = pi_i)
         - 'EDnot' : alpha is node-dependent prescribed by the probabilistic negation of the ED (alpha_i = 1 - pi_i)
         - 'weight' : alpha is node-dependent prescribed by the given node weight 'n_weight'
-    gamma : float (0.0 <= gamma <= 1.0)
-        weight for two-step interactions (Default = 0.0).
-
-        Note: when 'kdistr' is not 'distr2' gamma is treated as 0.0 regardless.
-    delta : float 
-        Radius of distribution support ball when kdistr=thresh (Default value = 0.5).
     power : float
         Edge weight power for edge-based distribution. (Default value = 1) 
     edge_list : {list, None, "all"}
@@ -935,8 +622,6 @@ def _compute_curvature_edges(G, n_weight="weight", e_weight="weight",
         Dictionary of graph distance (gdist) between every two nodes
 
         Note: if not specified, C is computed according to the specified 'gdist'
-    W1method = {"Primal", "KRduality", "dual2"}
-        Method for solving EMD. (Default = "Primal").
     EPS : float 
         Threshold for approximately 0
     nbr_maxk : int
@@ -1014,12 +699,8 @@ def _compute_curvature_edges(G, n_weight="weight", e_weight="weight",
                                          e_sqrt=e_sqrt, e_wprob=e_wprob)
 
     global _G
-    global _W1method
     global _alpha
-    global _gamma
-    global _delta
     global _pdistr
-    global _kdistr
     global _gdist
     global _nbr_maxk
     global _C
@@ -1035,11 +716,7 @@ def _compute_curvature_edges(G, n_weight="weight", e_weight="weight",
     global _edge_list
 
     _G = G.copy()
-    _W1method = W1method
     _alpha = alpha
-    _gamma = gamma
-    _delta = delta
-    _kdistr = kdistr
     _pdistr = pdistr
     _gdist = gdist
     _nbr_maxk = nbr_maxk
@@ -1108,8 +785,8 @@ def _compute_curvature_edges(G, n_weight="weight", e_weight="weight",
 
 
 def _equilib_dist(G: nx.Graph, n_weight="weight"):
-    """ compute ED (returned as nodal attribute "ED")
-    """
+    """ compute ED (returned as nodal attribute "ED") """
+   
 
     if not nx.is_connected(G):
         logger.warning("Graph is not connected -- equilibrium distribution not computed")
@@ -1242,22 +919,6 @@ def _compute_curvature(G: nx.Graph, n_weight="weight", C=None, gdist="hop", cont
     return G
 
 
-def reduced_edgelist(G, min_filter_size):
-    """ return edges in G in connected components with at least `min_filter_size` nodes """
-    components = list([c for c in nx.connected_components(G) if len(c) >= min_filter_size])
-    nodes = itertools.chain(*components)
-    return G.edges(nodes)
-
-
-def resulting_components(G, edge):
-    """ return sub-connected component(s) resulting from removing edge from its connected component """
-    component = list([c for c in nx.connected_components(G) if edge[0] in c][0])  # component with edge in it
-    sub = G.__class__()
-    sub.add_edges_from(G.edges(component))
-    sub.remove_edge(*edge)
-    return sorted(list(nx.connected_components(sub)), key=len, reverse=True)
-
-
 def orc_omics(G: nx.Graph): 
     """
     Run ORCO. Requires a networkX object G to be passed with node weights labeled as 'weight.'
@@ -1289,8 +950,8 @@ class ORC:
 
     def __init__(self, G: nx.Graph, n_weight="weight", e_weight="weight",
                  e_normalized=True, e_sqrt=True, e_wdeg=False, e_wprob=False,
-                 pdistr="mass_action", kdistr="distr1", gdist="whop", alpha=0.0, gamma=0.0, delta=0.5,
-                 power=1, contraction='ED', edge_list=None, C=None, W1method="Primal",
+                 pdistr="mass_action", gdist="whop", alpha=0.0, 
+                 power=1, contraction='ED', edge_list=None, C=None, 
                  EPS=1e-7, nbr_maxk=500, verbose="INFO",
                  proc=mp.cpu_count(), chunksize=None, cache_maxsize=1000000):
         """ Initialize a container to compute Ollivier-Ricci curvature and Ricci flow
@@ -1329,29 +990,6 @@ class ORC:
             - 'edge_based' : edge-based on distance --> :math:`m_ij := \exp(-d(i,j)^2)`
             - 'combo' : combine node and edge attributes --> :math:`m_ij := w_j * \exp(-d(i,j)^power)`
             - 'edge_simple' : simple edge-based on distance --> :math:`m_ij := 1/(d(i,j)^power)`
-
-        kdistr : {'distr1', 'distr2', 'thresh'}
-            Specify how to construct nodal probabilty distribution, i.e. which nodes the distribution should be defined over.
-            (Default = 'distr1')
-
-            options:
-
-            - 'distr1' : one-step Markov chain (Default)
-                         .. math::
-                             p_ij = alpha,                                     if j=i, \\
-                                    (1-alpha) * [ m_ij / sum_{k: k~i}(m_ik) ], if j~i, \\
-                                    0,                                         otherwise \\
-            - 'distr2' : two-step Markov chain
-                         .. math::
-                             p_ij = alpha,                                                                              if j=i \\
-                             (1-alpha) * [ m_ij / ( sum_{k: k~i}(m_ik) + gamma * (sum_{k: k~j~i, k\~i}(m_ik) ) ],       if j~i, \\
-                             (1-alpha) * gamma * [ m_ij / sum_{k: k~i}(m_ik) + gamma * (sum_{k: k~j~i, k/~i}(m_ik) ) ], if j~k~i and j\~i, \\
-                             0,                                                                                         otherwise
-            - 'thresh' : delta-ball step
-                         .. math::
-                             p_ij = alpha,                                                if i=j \\
-                                    (1-alpha) * [ m_ij / sum_{k: d(i,k) < delta}(m_ik) ], if d(i,j) < delta \\
-                                    0,                                                    otherwise.
         gdist : {'hop','whop'}
             Graph distance (Default = 'whop')
 
@@ -1368,12 +1006,6 @@ class ORC:
             - 'ED' : alpha is node-dependent prescribed by the ED (alpha_i = pi_i)
             - 'EDnot' : alpha is node-dependent prescribed by the probabilistic negation of the ED (alpha_i = 1 - pi_i)
             - 'weight' : alpha is node-dependent prescribed by the given node weight 'n_weight'
-        gamma : float (0.0 <= gamma <= 1.0)
-            weight for two-step interactions (Default = 0.0).
-
-            Note: when 'kdistr' is not 'distr2' gamma is treated as 0.0 regardless.
-        delta : float 
-            Radius of distribution support ball when kdistr=thresh (Default value = 0.5).
         power : float
             Edge weight power for edge-based distribution. (Default value = 1)
         contraction : str {'ED', 'distance'}
@@ -1394,8 +1026,6 @@ class ORC:
             Dictionary of graph distance (gdist) between every two nodes
 
             Note: if not specified, C is computed according to the specified 'gdist'
-        W1method = {"Primal", "KRduality", "dual2"}
-            Method for solving EMD. (Default = "Primal").
         EPS : float 
             Threshold for approximately 0
         nbr_maxk : int
@@ -1429,17 +1059,13 @@ class ORC:
         self.e_wdeg = e_wdeg
         self.e_wprob = e_wprob
         self.pdistr = pdistr
-        self.kdistr = kdistr
         self.gdist = gdist
         self.alpha = alpha
-        self.gamma = gamma
-        self.delta = delta
         self.contraction = contraction
         self.power = power
         self.edge_list = edge_list
         self.C = C
         self.EPS = EPS
-        self.W1method = W1method
         self.nbr_maxk = nbr_maxk
         self.proc = proc
         self.chunksize = chunksize
@@ -1544,14 +1170,10 @@ class ORC:
                            "e_wdeg : {}".format(self.e_wdeg),
                            "e_wprob : {}".format(self.e_wprob),
                            "pdistr : {:s}".format(self.pdistr),
-                           "kdistr : {:s}".format(self.kdistr),
                            "gdist : {:s}".format(self.gdist),
                            "alpha : {}".format(self.alpha if type(self.alpha) is str else np.round(self.alpha, 4)),
-                           "gamma : {:.4f}".format(self.gamma),
-                           "delta : {:.4f}".format(self.delta),
                            "contraction : {:s}".format(self.contraction),
                            "power : {:d}".format(self.power),
-                           "W1method : {:s}".format(self.W1method),
                            "EPS : {:.4f} (fixed)".format(EPS),
                            "nbr_maxk : {:d}".format(self.nbr_maxk),
                            "verbose : {:s}".format(self.verbose),
@@ -1602,10 +1224,9 @@ class ORC:
 
         return _compute_wasserstein_edges(G=self.G, n_weight=self.n_weight, e_weight=self.e_weight,
                                           e_wdeg=self.e_wdeg, e_wprob=self.e_wprob, 
-                                          e_normalized=self.e_normalized, e_sqrt=self.e_sqrt, pdistr=self.pdistr,
-                                          kdistr=self.kdistr,
-                                          alpha=self.alpha, gamma=self.gamma, delta=self.delta, gdist=self.gdist,
-                                          power=self.power, edge_list=edge_list, C=self.C, W1method=self.W1method,
+                                          e_normalized=self.e_normalized, e_sqrt=self.e_sqrt, pdistr=self.pdistr,                                          
+                                          alpha=self.alpha, gdist=self.gdist,
+                                          power=self.power, edge_list=edge_list, C=self.C, 
                                           nbr_maxk=self.nbr_maxk, EPS=EPS, proc=self.proc,
                                           chunksize=self.chunksize, cache_maxsize=self.cache_maxsize)
 
@@ -1642,9 +1263,9 @@ class ORC:
         return _compute_curvature_edges(G=self.G, n_weight=self.n_weight, e_weight=self.e_weight,
                                         e_wdeg=self.e_wdeg, e_wprob=self.e_wprob, 
                                         e_normalized=self.e_normalized, e_sqrt=self.e_sqrt, pdistr=self.pdistr,
-                                        kdistr=self.kdistr,
-                                        alpha=self.alpha, gamma=self.gamma, delta=self.delta, gdist=self.gdist,
-                                        power=self.power, edge_list=edge_list, C=self.C, W1method=self.W1method,
+                                        
+                                        alpha=self.alpha, gdist=self.gdist,
+                                        power=self.power, edge_list=edge_list, C=self.C, 
                                         nbr_maxk=self.nbr_maxk, EPS=EPS, proc=self.proc,
                                         chunksize=self.chunksize, cache_maxsize=self.cache_maxsize)
 
@@ -1705,11 +1326,11 @@ class ORC:
 
         self.G = _compute_curvature(G=self.G, n_weight=self.n_weight, e_weight=self.e_weight,
                                     e_wdeg=self.e_wdeg, e_wprob=self.e_wprob,
-                                    e_normalized=self.e_normalized, e_sqrt=self.e_sqrt, kdistr=self.kdistr,
+                                    e_normalized=self.e_normalized, e_sqrt=self.e_sqrt, 
                                     gdist=self.gdist,
-                                    pdistr=self.pdistr, alpha=self.alpha, gamma=self.gamma, delta=self.delta,
+                                    pdistr=self.pdistr, alpha=self.alpha, 
                                     power=self.power, contraction=self.contraction,
-                                    edge_list=None, C=self.C, W1method=self.W1method,
+                                    edge_list=None, C=self.C, 
                                     nbr_maxk=self.nbr_maxk, EPS=EPS, proc=self.proc,
                                     chunksize=self.chunksize, cache_maxsize=self.cache_maxsize)
         return self.G
