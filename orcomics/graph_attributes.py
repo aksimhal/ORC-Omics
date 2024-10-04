@@ -6,7 +6,7 @@ from functools import lru_cache
 import networkx as nx
 import numpy as np
 
-from orco.util import logger
+from orcomics.util import logger
 
 EPS = 1e-7
 cache_maxsize = 1000000

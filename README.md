@@ -3,7 +3,7 @@
 Welcome to ORCO: Ollivier-Ricci curvature for omic data analysis. Details about the tool and implementation are found at [insert biorxiv link]. 
 
 ## How to install 
-ORCO can be installe via pip: ```pip install orco``` 
+ORCO can be installe via pip: ```pip install orcomics``` 
 
 ## Examples (jupyter notebook)
 * Example 1: This illustrates ORCO on nodal values using a toy 6-node network 

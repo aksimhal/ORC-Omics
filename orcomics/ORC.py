@@ -33,8 +33,8 @@ import time
 import pandas as pd
 import scipy.sparse.csgraph as scg
 
-from orco.util import logger, set_verbose
-from orco.graph_attributes import pij, compute_edge_weights
+from orcomics.util import logger, set_verbose
+from orcomics.graph_attributes import pij, compute_edge_weights
 
 EPS = 1e-7
 

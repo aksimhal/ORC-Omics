@@ -1,7 +1,0 @@
-scipy
-numpy
-networkx
-pot 
-pandas
-ecos
-cvxpy

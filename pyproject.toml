@@ -3,16 +3,16 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "orco"
-version = "0.1.1"
+name = "orcomics"
+version = "0.1.2"
 dependencies = [
   "scipy",
   "numpy",
   "networkx",
   "pot",
   "pandas",
-  "ecos",
-  "cvxpy"
+  "cvxpy",
+  "ecos"
 ]
 authors = [
   { name="Anish Simhal", email="aksimhal@gmail.com" },
