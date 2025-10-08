@@ -1,6 +1,6 @@
 # ORC-Omics 
 
-Welcome to ORCO: Ollivier-Ricci curvature for omic data analysis. Details about the tool and implementation are found at [insert biorxiv link]. 
+Welcome to ORCO: Ollivier-Ricci curvature for omic data analysis. Details about the tool and implementation are found at https://academic.oup.com/bioinformatics/article/41/3/btaf093/8046014. 
 
 ## How to install 
 ORCO can be installe via pip: ```pip install orcomics``` 
